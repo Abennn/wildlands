@@ -1,0 +1,139 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import asyncio
+import json
+import os
+
+POLL_ROLE_ID = 1277431881511604287  # Replace with your developer role ID
+POLL_DATA_FILE = "poll_data.json"  # File to store ongoing poll data
+
+POLL_CHANNEL_ID = 1277433308904558696  # Channel ID where polls will be sent
+
+class PollOption:
+    def __init__(self, emoji, description):
+        self.emoji = emoji
+        self.description = description
+        self.votes = 0
+
+class Poll(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.active_polls = {}
+        self.load_polls()
+
+    def save_polls(self):
+        with open(POLL_DATA_FILE, "w") as f:
+            json.dump(self.active_polls, f)
+
+    def load_polls(self):
+        if os.path.exists(POLL_DATA_FILE):
+            with open(POLL_DATA_FILE, "r") as f:
+                self.active_polls = json.load(f)
+
+            # Restart any ongoing polls
+            for poll_message_id, poll_data in self.active_polls.items():
+                self.bot.loop.create_task(self.resume_poll(poll_message_id, poll_data))
+
+    async def resume_poll(self, poll_message_id, poll_data):
+        channel = self.bot.get_channel(poll_data["channel_id"])
+        poll_message = await channel.fetch_message(poll_message_id)
+
+        await self.run_poll(poll_message, poll_data["duration"], poll_data["question"], poll_data["options"], poll_data["user_id"])
+
+    @app_commands.command(name="poll", description="Create a poll with multiple choices.")
+    @app_commands.describe(
+        question="The poll question",
+        options="Comma-separated list of options",
+        duration="Optional: Poll duration in minutes (default: 5 minutes)"
+    )
+    @app_commands.checks.has_role(POLL_ROLE_ID)  # Restrict command to Developer role
+    async def poll_command(self, interaction: discord.Interaction, question: str, options: str, duration: int = 5):
+        poll_options = options.split(',')
+        if len(poll_options) > 10:
+            await interaction.response.send_message("You can only have up to 10 options.", ephemeral=True)
+            return
+
+        # List of emojis for voting
+        emojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
+        
+        # Creating poll options with emojis
+        poll_options = [PollOption(emojis[i], option.strip()) for i, option in enumerate(poll_options)]
+
+        # Building the embed
+        embed = discord.Embed(
+            title="📊 Poll",
+            description=question,
+            color=0x6a0dad  # Purple color
+        )
+
+        for option in poll_options:
+            embed.add_field(name=option.emoji, value=option.description, inline=False)
+
+        embed.set_footer(text=f"Poll created by {interaction.user.display_name} ○ Developer", icon_url=interaction.user.display_avatar.url)
+        embed.timestamp = discord.utils.utcnow()
+
+        # Sending the poll embed to the specific channel
+        poll_channel = self.bot.get_channel(POLL_CHANNEL_ID)  # Channel ID where polls will be sent
+        poll_message = await poll_channel.send(embed=embed)
+
+        # Adding reactions to the poll message
+        for option in poll_options:
+            await poll_message.add_reaction(option.emoji)
+
+        await interaction.response.send_message(f"Poll created successfully in {poll_channel.mention}.", ephemeral=True)
+
+        # Save poll data for persistence
+        self.active_polls[poll_message.id] = {
+            "channel_id": poll_channel.id,
+            "duration": duration,
+            "question": question,
+            "options": [option.description for option in poll_options],
+            "user_id": interaction.user.id
+        }
+        self.save_polls()
+
+        # Run the poll
+        await self.run_poll(poll_message, duration, question, poll_options, interaction.user.id)
+
+    async def run_poll(self, poll_message, duration, question, poll_options, user_id):
+        # Wait for the poll duration
+        await asyncio.sleep(duration * 60)
+
+        # Fetch the poll message to count the reactions
+        poll_message = await poll_message.channel.fetch_message(poll_message.id)
+
+        for reaction in poll_message.reactions:
+            for option in poll_options:
+                if reaction.emoji == option.emoji:
+                    option.votes = reaction.count - 1  # Subtracting the bot's own reaction
+
+        # Determine the winner(s)
+        max_votes = max(option.votes for option in poll_options)
+        winners = [option for option in poll_options if option.votes == max_votes]
+
+        # Building the results embed
+        results_embed = discord.Embed(
+            title="🗳️ Poll Results",
+            description=f"Results for the poll: **{question}**",
+            color=0x00BFFF  # Deep sky blue color for results
+        )
+
+        for option in poll_options:
+            results_embed.add_field(name=option.emoji, value=f"{option.description}: **{option.votes}** votes", inline=False)
+
+        winner_text = ", ".join([f"{winner.description} ({winner.votes} votes)" for winner in winners])
+        results_embed.add_field(name="Winner(s):", value=winner_text, inline=False)
+        results_embed.set_footer(text=f"Poll created by <@{user_id}> ○ Developer", icon_url=poll_message.author.display_avatar.url)
+        results_embed.timestamp = discord.utils.utcnow()
+
+        # Sending the results embed
+        await poll_message.channel.send(embed=results_embed)
+
+        # Clean up the active poll data
+        self.active_polls.pop(poll_message.id, None)
+        self.save_polls()
+
+# Adding the Poll cog to the bot
+async def setup(bot):
+    await bot.add_cog(Poll(bot))
