@@ -83,6 +83,7 @@ async def load_cogs():
 
 @bot.event
 async def on_ready():
+    bot.load_extension('jishaku')
     print(f'Logged in as {bot.user.name}')
     await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="🖥️ Wildlands"))
     channel = bot.get_channel(CHANNEL_ID)
